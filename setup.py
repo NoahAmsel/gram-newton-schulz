@@ -15,11 +15,7 @@ setup(
     python_requires=">=3.12",
     install_requires=[
         "torch>=2.7.1",
+        "quack-kernels @ git+https://github.com/Dao-AILab/quack.git@490a300b09981fe9565c82ff64d5448a6bc1bb7d",
+        "nvidia-cutlass-dsl==4.4.1",
     ],
-    extras_require={
-        "kernels": [
-            "quack-kernels @ git+https://github.com/Dao-AILab/quack.git@490a300b09981fe9565c82ff64d5448a6bc1bb7d",
-            "nvidia-cutlass-dsl==4.4.1",
-        ],
-    },
 )
