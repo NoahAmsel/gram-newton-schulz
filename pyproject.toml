@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gram-newton-schulz"
+version = "0.0.1"
+description = "Fast Newton-Schulz Algorithm with Kernels"
+authors = [
+    {name = "Jack Zhang"},
+    {name = "Noah Amsel"},
+    {name = "Berlin Chen"},
+    {name = "Tri Dao"},
+]
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+dependencies = [
+    "torch>=2.7.1",
+    "quack-kernels==0.3.7",
+    "nvidia-cutlass-dsl==4.4.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/Dao-AILab/gram-newton-schulz"
+Repository = "https://github.com/Dao-AILab/gram-newton-schulz"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gram_newton_schulz*"]
+
+[tool.setuptools.package-data]
+"*" = ["**/*.cu", "**/*.cpp", "**/*.cuh", "**/*.h", "**/*.pyx"]
