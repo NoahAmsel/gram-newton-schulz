@@ -107,13 +107,13 @@ class GramNewtonSchulz:
 
         if self.use_gram_newton_schulz and max(X.shape[-2:]) > min(X.shape[-2:]):
             X = self._gram_newton_schulz(X)
-            if self._check_failure(exact_input, X):
+            if self._check_failure(exact_input, X, "Gram-Newton-Schulz"):
                 print("Falling back to standard Newton-Schulz")
                 X = self._standard_newton_schulz(exact_input)
-                self._check_failure(exact_input, X)
+                self._check_failure(exact_input, X, "Standard Newton-Schulz")
         else:
             X = self._standard_newton_schulz(X)
-            self._check_failure(exact_input, X)
+            self._check_failure(exact_input, X, "Standard Newton-Schulz")
 
         if should_transpose:
             X = X.mT
@@ -121,12 +121,12 @@ class GramNewtonSchulz:
         out = X.to(original_dtype).view(original_shape)
         return out
 
-    def _check_failure(self, inp, out):
+    def _check_failure(self, inp, out, alg_name):
         norms = torch.linalg.matrix_norm(out, dim=(-2, -1))
         expected_norm = torch.sqrt(torch.tensor(min(out.size(-2), out.size(-1)), device=out.device, dtype=out.dtype))
-        if (norms > 5*expected_norm).any():
+        if (norms > 5*expected_norm).any() or not torch.isfinite(out).all():
             self._divergence_count += 1
-            print("Warning: Newton Schulz diverged?")
+            print(f"Warning: {alg_name} diverged? using_kernels {self.ns_use_kernels} ({self._divergence_count})")
             if self._divergence_count <= 20:
                 os.makedirs("./divergences", exist_ok=True)
                 torch.save(inp.cpu(), f"./divergences/diverged_input{self._divergence_count}.pt")
