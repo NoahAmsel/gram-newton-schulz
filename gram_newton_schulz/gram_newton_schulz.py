@@ -1,3 +1,4 @@
+import os
 from types import SimpleNamespace
 from typing import Dict, List, Optional
 import torch
@@ -66,6 +67,7 @@ class GramNewtonSchulz:
             self.gram_newton_schulz_reset_iterations = gram_newton_schulz_reset_iterations if gram_newton_schulz_reset_iterations is not None else [2]
 
         self._kernel_backend = _make_kernel_backend() if self.ns_use_kernels else None
+        self._divergence_count = 0
 
         if compile_kwargs is not None:
             self.__call__ = torch.compile(self.__call__, **compile_kwargs)
@@ -101,15 +103,35 @@ class GramNewtonSchulz:
         X /= X.norm(dim=(-2, -1), keepdim=True) + self.ns_epsilon
         X = X.to(torch.float16)
 
+        exact_input = X.clone()
+
         if self.use_gram_newton_schulz and max(X.shape[-2:]) > min(X.shape[-2:]):
             X = self._gram_newton_schulz(X)
+            if self._check_failure(exact_input, X):
+                print("Falling back to standard Newton-Schulz")
+                X = self._standard_newton_schulz(exact_input)
+                self._check_failure(exact_input, X)
         else:
             X = self._standard_newton_schulz(X)
+            self._check_failure(exact_input, X)
 
         if should_transpose:
             X = X.mT
 
-        return X.to(original_dtype).view(original_shape)
+        out = X.to(original_dtype).view(original_shape)
+        return out
+
+    def _check_failure(self, inp, out):
+        norms = torch.linalg.matrix_norm(out, dim=(-2, -1))
+        expected_norm = torch.sqrt(torch.tensor(min(out.size(-2), out.size(-1)), device=out.device, dtype=out.dtype))
+        if (norms > 5*expected_norm).any():
+            self._divergence_count += 1
+            print("Warning: Newton Schulz diverged?")
+            if self._divergence_count <= 20:
+                os.makedirs("./divergences", exist_ok=True)
+                torch.save(inp.cpu(), f"./divergences/diverged_input{self._divergence_count}.pt")
+            return True
+        return False
 
     def _gram_newton_schulz(self, X: Tensor) -> Tensor:
         ops = self._select_backend(X)
@@ -137,7 +159,6 @@ class GramNewtonSchulz:
         X = ops.mm(Q, X)
 
         return X
-
     def _standard_newton_schulz(self, X: Tensor) -> Tensor:
         ops = self._select_backend(X)
         for a, b, c in self.ns_coefficients:
