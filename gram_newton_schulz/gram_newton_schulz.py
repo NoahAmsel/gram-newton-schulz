@@ -130,8 +130,10 @@ class GramNewtonSchulz:
             self._divergence_count += 1
             print(f"GNS warning: {alg_name} diverged, size {out.size()} using_kernels={self.ns_use_kernels} ({self._divergence_count})")
             if self._divergence_count <= 20:
-                os.makedirs("./divergences", exist_ok=True)
-                torch.save(inp.cpu(), f"./divergences/diverged_input{self._divergence_count}.pt")
+                out_dir = os.environ.get("OUTPUT_ROOT", ".")
+                save_dir = os.path.join(out_dir, "divergences")
+                os.makedirs(save_dir, exist_ok=True)
+                torch.save(inp.cpu(), f"{save_dir}/diverged_input{self._divergence_count}.pt")
             return True
         return False
 
