@@ -166,9 +166,10 @@ class GramNewtonSchulz:
     def _standard_newton_schulz(self, X: Tensor) -> Tensor:
         ops = self._select_backend(X)
         for a, b, c in self.ns_coefficients:
-            A = ops.mm(X, X.mT)
-            B = ops.mm_add(A, A, C=A, alpha=c, beta=b)
-            X = ops.mm_add(B, X, C=X, beta=a)
+            A = ops.sym_mm(X, X.mT)
+            B = ops.sym_baddbmm(A, A, C=A, alpha=c, beta=b)
+            X = torch.baddbmm(X, B, X, beta=a)
+            # X = ops.mm_add(B, X, C=X, beta=a)  # replacing with above
 
         return X
 
