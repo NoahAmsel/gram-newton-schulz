@@ -17,7 +17,7 @@ requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
     "torch>=2.7.1",
-    "quack-kernels @ git+https://github.com/NoahAmsel/quack/",
+    "quack-kernels @ git+https://github.com/NoahAmsel/quack/@fix-autotuner-worker-device-affinity",
     "nvidia-cutlass-dsl==4.4.2",
 ]
 
