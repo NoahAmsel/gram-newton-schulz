@@ -20,9 +20,9 @@ def _make_kernel_backend():
     from quack.gemm_interface import gemm_symmetric, gemm, gemm_add
     return SimpleNamespace(
         sym_mm=gemm_symmetric,
-        sym_baddbmm=lambda A, B, C, alpha=1, beta=1: gemm_symmetric(A, B, C=C, alpha=alpha, beta=beta),
+        sym_baddbmm=lambda A, B, C, alpha=1., beta=1.: gemm_symmetric(A, B, C=C, alpha=alpha, beta=beta),
         mm=gemm,
-        mm_add=lambda A, B, C, beta: gemm_add(A, B, C=C, beta=beta),
+        mm_add=lambda A, B, C, beta, alpha=1.: gemm_add(A, B, C=C, beta=beta, alpha=alpha),
     )
 
 
@@ -166,8 +166,8 @@ class GramNewtonSchulz:
     def _standard_newton_schulz(self, X: Tensor) -> Tensor:
         ops = self._select_backend(X)
         for a, b, c in self.ns_coefficients:
-            A = ops.sym_mm(X, X.mT)
-            B = ops.sym_baddbmm(A, A, C=A, alpha=c, beta=b)
+            A = ops.mm(X, X.mT)
+            B = ops.mm_add(A, A, C=A, alpha=c, beta=b)
             X = ops.mm_add(B, X, C=X, beta=a)
 
         return X
