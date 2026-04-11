@@ -63,7 +63,7 @@ print(gram_newton_schulz.__version__)
 # Pin to the config from the failing training run (skip autotuner benchmarking)
 failing_config = GemmConfig(
     tile_m=256, tile_n=224, pingpong=False, is_dynamic_persistent=True,
-    cluster_m=2, cluster_n=1, swap_ab=True, max_swizzle_size=8, device_capacity=10,
+    cluster_m=2, cluster_n=1, swap_ab=False, max_swizzle_size=8, device_capacity=10,
 )
 gemm_tuned.configs = [AutotuneConfig(config=failing_config)]
 

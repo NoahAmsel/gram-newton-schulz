@@ -1,12 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-GNS_PACKAGE="gram-newton-schulz"
-# GNS_PACKAGE="gram-newton-schulz @ git+https://github.com/NoahAmsel/gram-newton-schulz@debug-nan"
+# GNS_PACKAGE="gram-newton-schulz"
+GNS_PACKAGE="gram-newton-schulz @ git+https://github.com/NoahAmsel/gram-newton-schulz@debug-nan"
 
 echo "Using package version (from web): $GNS_PACKAGE"
 
-kubectl cp /home/t-noahamsel/aifsdk.worktrees/submitter/phitrain/scripts/train/test-ns.py \
+kubectl cp /home/t-noahamsel/gram-newton-schulz/bad_autotuner.py \
   bonete61/cjob-uploader:/data/t-noahamsel/scripts/test-ns.py
 
 JOB_NAME=$(cat <<YAMLEOF | kubectl create -f - -o jsonpath='{.metadata.name}'
