@@ -71,7 +71,7 @@ class GramNewtonSchulz:
             self.__call__ = torch.compile(self.__call__, **compile_kwargs)
 
     def _select_backend(self, X: Tensor):
-        if self._kernel_backend is not None and min(X.size(-2), X.size(-1)) > SYMMETRIC_KERNEL_TILE_SIZE:
+        if self._kernel_backend is not None and min(X.size(-2), X.size(-1)) > 2 * SYMMETRIC_KERNEL_TILE_SIZE:
             return self._kernel_backend
         return _TORCH_BACKEND
 
@@ -98,7 +98,7 @@ class GramNewtonSchulz:
         if should_transpose := (X.size(-2) > X.size(-1)):
             X = X.mT
 
-        X /= X.norm(dim=(-2, -1), keepdim=True) + self.ns_epsilon
+        X = X / X.norm(dim=(-2, -1), keepdim=True) + self.ns_epsilon
         X = X.to(torch.float16)
 
         if self.use_gram_newton_schulz and max(X.shape[-2:]) > min(X.shape[-2:]):
