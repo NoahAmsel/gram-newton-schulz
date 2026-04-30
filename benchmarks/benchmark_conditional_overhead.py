@@ -2,23 +2,19 @@
 Benchmark to measure overhead of conditionals (backend selection, gram vs standard choice)
 for small matrices where the actual compute is fast and overhead may be significant.
 
-Compares:
-1. Full GramNewtonSchulz (with all conditionals)
-2. A "hardcoded" version that skips conditionals by calling the inner method directly
+Compares the full GramNewtonSchulz (which dynamically selects backend and algorithm)
+against hardcoded versions that use a fixed backend (quack or pytorch) with no conditionals.
 
-This helps isolate whether torch.compile eliminates the branching cost or not.
-Uses the quack kernel backend for all tests.
+This helps determine whether torch.compile eliminates the branching cost or not.
 """
 
 import torch
-import time
-from gram_newton_schulz import GramNewtonSchulz, StandardNewtonSchulz, POLAR_EXPRESS_COEFFICIENTS
+from gram_newton_schulz import GramNewtonSchulz, POLAR_EXPRESS_COEFFICIENTS
 from quack.gemm_interface import gemm_symmetric, gemm, gemm_add
 
 
 def benchmark_fn(fn, warmup=50, iters=200):
     """Benchmark a function using CUDA events for accurate GPU timing."""
-    # Warmup
     for _ in range(warmup):
         fn()
     torch.cuda.synchronize()
@@ -36,19 +32,18 @@ def benchmark_fn(fn, warmup=50, iters=200):
     return times
 
 
-def make_hardcoded_gram_ns(coefficients, reset_iterations):
-    """
-    Create a hardcoded version that does the same math as GramNewtonSchulz
-    but without any runtime conditionals for backend/algorithm selection.
-    Always uses quack backend, always does gram, never transposes.
-    """
+# ============================================================================
+# Hardcoded Quack backend versions (no conditionals)
+# ============================================================================
+
+def make_hardcoded_gram_quack(coefficients, reset_iterations):
+    """Hardcoded gram NS using quack backend, no conditionals."""
     @torch.compile(fullgraph=True, mode="reduce-overhead")
     def hardcoded(X: torch.Tensor) -> torch.Tensor:
         X = X.to(torch.float32)
-        X /= (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
+        X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
         X = X.to(torch.float16)
 
-        # Gram Newton-Schulz with quack ops, no conditionals
         R = gemm_symmetric(X, X.mT)
         batch_size = R.size(0)
         I = torch.eye(R.size(-1), device=X.device, dtype=X.dtype).unsqueeze(0).expand(batch_size, -1, -1).contiguous()
@@ -75,12 +70,12 @@ def make_hardcoded_gram_ns(coefficients, reset_iterations):
     return hardcoded
 
 
-def make_hardcoded_standard_ns(coefficients):
-    """Hardcoded standard NS with no conditionals, using quack backend."""
+def make_hardcoded_standard_quack(coefficients):
+    """Hardcoded standard NS using quack backend, no conditionals."""
     @torch.compile(fullgraph=True, mode="reduce-overhead")
     def hardcoded(X: torch.Tensor) -> torch.Tensor:
         X = X.to(torch.float32)
-        X /= (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
+        X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
         X = X.to(torch.float16)
 
         for a, b, c in coefficients:
@@ -93,107 +88,194 @@ def make_hardcoded_standard_ns(coefficients):
     return hardcoded
 
 
+# ============================================================================
+# Hardcoded PyTorch backend versions (no conditionals)
+# ============================================================================
+
+def make_hardcoded_gram_pytorch(coefficients, reset_iterations):
+    """Hardcoded gram NS using pytorch backend, no conditionals."""
+    @torch.compile(fullgraph=True, mode="reduce-overhead")
+    def hardcoded(X: torch.Tensor) -> torch.Tensor:
+        X = X.to(torch.float32)
+        X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
+        X = X.to(torch.float16)
+
+        R = X @ X.mT
+        batch_size = R.size(0)
+        I = torch.eye(R.size(-1), device=X.device, dtype=X.dtype).unsqueeze(0).expand(batch_size, -1, -1).contiguous()
+        Q = None
+
+        for i, (a, b, c) in enumerate(coefficients):
+            if i in reset_iterations and i != 0:
+                X = Q @ X
+                R = X @ X.mT
+                Q = None
+
+            Z = torch.baddbmm(R, R, R, alpha=c, beta=b)
+            if i == 0 or i in reset_iterations:
+                Q = Z + a * I
+            else:
+                Q = torch.baddbmm(Q, Q, Z, beta=a)
+            if i < len(coefficients) - 1 and i + 1 not in reset_iterations:
+                RZ = torch.baddbmm(R, R, Z, beta=a)
+                R = torch.baddbmm(RZ, Z, RZ, beta=a)
+
+        X = Q @ X
+        return X
+
+    return hardcoded
+
+
+def make_hardcoded_standard_pytorch(coefficients):
+    """Hardcoded standard NS using pytorch backend, no conditionals."""
+    @torch.compile(fullgraph=True, mode="reduce-overhead")
+    def hardcoded(X: torch.Tensor) -> torch.Tensor:
+        X = X.to(torch.float32)
+        X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
+        X = X.to(torch.float16)
+
+        for a, b, c in coefficients:
+            A = X @ X.mT
+            B = torch.baddbmm(A, A, A, alpha=c, beta=b)
+            X = torch.baddbmm(X, B, X, beta=a)
+
+        return X
+
+    return hardcoded
+
+
+# ============================================================================
+# Main benchmark
+# ============================================================================
+
+def print_header(title):
+    print(f"\n{'=' * 90}")
+    print(f"  {title}")
+    print(f"{'=' * 90}")
+
+
+def print_table_header():
+    print(f"{'Shape':<18} {'Full (ms)':<11} {'Quack (ms)':<12} {'PyTorch (ms)':<14} {'Overhead':<15}")
+    print("-" * 70)
+
+
 def main():
     device = "cuda"
+    # Small matrices where overhead may be significant
+    BATCH = 128
     shapes = [
-        (16, 256, 256),
-        (16, 512, 512),
-        (16, 1024, 1024),
-        (16, 256, 1024),
+        (BATCH, 256, 256),
+        (BATCH, 256, 512),
+        (BATCH, 256, 1024),
+        (BATCH, 256, 2048),
+        (BATCH, 256, 4096),
+        (BATCH, 512, 4096),
+        (BATCH, 256, 256),
+        (BATCH, 512, 512),
+        (BATCH, 1024, 1024),
     ]
 
     coefficients = POLAR_EXPRESS_COEFFICIENTS
     reset_iterations = [2]
 
-    print("=" * 80)
-    print("Conditional Overhead Benchmark")
-    print("Comparing full GramNewtonSchulz (with conditionals) vs hardcoded (no conditionals)")
-    print("=" * 80)
+    print_header("Conditional Overhead Benchmark: Full GramNewtonSchulz vs Hardcoded Backends")
+    print("\nFull GramNewtonSchulz has runtime conditionals that choose:")
+    print("  1. Backend: quack kernels (if min dim > 256) vs pytorch (otherwise)")
+    print("  2. Algorithm: gram (if non-square) vs standard (if square)")
+    print("  3. Transpose: if M > N")
+    print("\nHardcoded versions skip all conditionals and use a fixed backend + algorithm.")
 
-    # --- Gram Newton-Schulz (non-square, where gram is chosen) ---
-    print("\n--- GRAM Newton-Schulz path (non-square matrices) ---")
-    print(f"{'Shape':<20} {'Full (ms)':<12} {'Hardcoded (ms)':<16} {'Overhead (ms)':<15} {'Overhead %':<12}")
-    print("-" * 75)
-
-    gram_ns = GramNewtonSchulz(
+    # Build the full GramNewtonSchulz (with all conditionals, uses kernels)
+    full_ns = GramNewtonSchulz(
         ns_coefficients=coefficients,
         gram_newton_schulz_reset_iterations=reset_iterations,
-        ns_use_kernels=True,  # Use quack backend
+        ns_use_kernels=True,
     )
-    hardcoded_gram = make_hardcoded_gram_ns(coefficients, set(reset_iterations))
+
+    # Build hardcoded versions
+    hardcoded_gram_quack = make_hardcoded_gram_quack(coefficients, set(reset_iterations))
+    hardcoded_gram_pytorch = make_hardcoded_gram_pytorch(coefficients, set(reset_iterations))
+    hardcoded_standard_quack = make_hardcoded_standard_quack(coefficients)
+    hardcoded_standard_pytorch = make_hardcoded_standard_pytorch(coefficients)
+
+    # --- Gram path (non-square matrices) ---
+    print_header("GRAM Newton-Schulz path (non-square matrices)")
+    print_table_header()
 
     for shape in shapes:
         if shape[-2] == shape[-1]:
-            continue  # gram path only chosen for non-square
+            continue
 
         X = torch.randn(shape, device=device)
 
-        full_times = benchmark_fn(lambda: gram_ns(X))
-        hard_times = benchmark_fn(lambda: hardcoded_gram(X.unsqueeze(0) if X.ndim == 2 else X))
+        full_times = benchmark_fn(lambda: full_ns(X))
+        quack_times = benchmark_fn(lambda: hardcoded_gram_quack(X))
+        pytorch_times = benchmark_fn(lambda: hardcoded_gram_pytorch(X))
 
         full_med = sorted(full_times)[len(full_times) // 2]
-        hard_med = sorted(hard_times)[len(hard_times) // 2]
-        overhead = full_med - hard_med
-        overhead_pct = (overhead / hard_med) * 100 if hard_med > 0 else 0
+        quack_med = sorted(quack_times)[len(quack_times) // 2]
+        pytorch_med = sorted(pytorch_times)[len(pytorch_times) // 2]
 
-        print(f"{str(shape):<20} {full_med:<12.4f} {hard_med:<16.4f} {overhead:<15.4f} {overhead_pct:<12.1f}")
+        best_med = min(quack_med, pytorch_med)
+        overhead = ((full_med - best_med) / best_med * 100) if best_med > 0 else 0
 
-    # --- Standard Newton-Schulz (square matrices) ---
-    print("\n--- STANDARD Newton-Schulz path (square matrices) ---")
-    print(f"{'Shape':<20} {'Full (ms)':<12} {'Hardcoded (ms)':<16} {'Overhead (ms)':<15} {'Overhead %':<12}")
-    print("-" * 75)
+        print(f"{str(shape):<18} {full_med:<11.4f} {quack_med:<12.4f} {pytorch_med:<14.4f} {overhead:<+14.1f}%")
 
-    standard_ns = GramNewtonSchulz(
-        ns_coefficients=coefficients,
-        ns_use_kernels=True,
-        use_gram_newton_schulz=False
-    )
-    hardcoded_standard = make_hardcoded_standard_ns(coefficients)
+    # --- Standard path (square matrices) ---
+    print_header("STANDARD Newton-Schulz path (square matrices)")
+    print_table_header()
 
     for shape in shapes:
         if shape[-2] != shape[-1]:
-            continue  # standard path only for square
+            continue
 
         X = torch.randn(shape, device=device)
 
-        full_times = benchmark_fn(lambda: standard_ns(X))
-        hard_times = benchmark_fn(lambda: hardcoded_standard(X.unsqueeze(0) if X.ndim == 2 else X))
+        full_times = benchmark_fn(lambda: full_ns(X))
+        quack_times = benchmark_fn(lambda: hardcoded_standard_quack(X))
+        pytorch_times = benchmark_fn(lambda: hardcoded_standard_pytorch(X))
 
         full_med = sorted(full_times)[len(full_times) // 2]
-        hard_med = sorted(hard_times)[len(hard_times) // 2]
-        overhead = full_med - hard_med
-        overhead_pct = (overhead / hard_med) * 100 if hard_med > 0 else 0
+        quack_med = sorted(quack_times)[len(quack_times) // 2]
+        pytorch_med = sorted(pytorch_times)[len(pytorch_times) // 2]
 
-        print(f"{str(shape):<20} {full_med:<12.4f} {hard_med:<16.4f} {overhead:<15.4f} {overhead_pct:<12.1f}")
+        best_med = min(quack_med, pytorch_med)
+        overhead = ((full_med - best_med) / best_med * 100) if best_med > 0 else 0
 
-    # --- Also test: compile with conditionals vs without compile ---
-    print("\n--- Effect of torch.compile on conditional overhead ---")
-    print(f"{'Shape':<20} {'Compiled (ms)':<14} {'Uncompiled (ms)':<17} {'Compile speedup':<15}")
-    print("-" * 66)
+        print(f"{str(shape):<18} {full_med:<11.4f} {quack_med:<12.4f} {pytorch_med:<14.4f} {overhead:<+14.1f}%")
 
-    uncompiled_ns = GramNewtonSchulz(
-        ns_coefficients=coefficients,
-        gram_newton_schulz_reset_iterations=reset_iterations,
-        ns_use_kernels=True,
-        compile_kwargs=None,  # No compilation
-    )
+    # # --- Compiled vs uncompiled ---
+    # print_header("Effect of torch.compile (full GramNewtonSchulz with conditionals)")
+    # print(f"{'Shape':<18} {'Compiled (ms)':<14} {'Uncompiled (ms)':<17} {'Speedup':<10}")
+    # print("-" * 59)
 
-    for shape in shapes:
-        X = torch.randn(shape, device=device)
+    # uncompiled_ns = GramNewtonSchulz(
+    #     ns_coefficients=coefficients,
+    #     gram_newton_schulz_reset_iterations=reset_iterations,
+    #     ns_use_kernels=True,
+    #     compile_kwargs=None,
+    # )
 
-        compiled_times = benchmark_fn(lambda: gram_ns(X) if shape[-2] != shape[-1] else standard_ns(X))
-        uncompiled_times = benchmark_fn(lambda: uncompiled_ns(X))
+    # for shape in shapes:
+    #     X = torch.randn(shape, device=device)
 
-        comp_med = sorted(compiled_times)[len(compiled_times) // 2]
-        uncomp_med = sorted(uncompiled_times)[len(uncompiled_times) // 2]
-        speedup = uncomp_med / comp_med if comp_med > 0 else 0
+    #     compiled_times = benchmark_fn(lambda: full_ns(X))
+    #     uncompiled_times = benchmark_fn(lambda: uncompiled_ns(X))
 
-        print(f"{str(shape):<20} {comp_med:<14.4f} {uncomp_med:<17.4f} {speedup:<15.2f}x")
+    #     comp_med = sorted(compiled_times)[len(compiled_times) // 2]
+    #     uncomp_med = sorted(uncompiled_times)[len(uncompiled_times) // 2]
+    #     speedup = uncomp_med / comp_med if comp_med > 0 else 0
 
-    print("\n" + "=" * 80)
-    print("If 'Overhead %' is significant (>5%), conditionals are costly at this size.")
-    print("If compile speedup is large, torch.compile is helping eliminate Python overhead.")
-    print("=" * 80)
+    #     print(f"{str(shape):<18} {comp_med:<14.4f} {uncomp_med:<17.4f} {speedup:<10.2f}x")
+
+    print("\n" + "=" * 90)
+    print("INTERPRETATION:")
+    print("  - 'Ovhd vs Quack/PyTorch' shows how much slower the full class is vs hardcoded.")
+    print("  - Positive % = conditionals add overhead. Negative % = full class is somehow faster.")
+    print("  - For small matrices (min dim <= 256), full class uses PyTorch backend.")
+    print("  - For larger matrices (min dim > 256), full class uses quack backend.")
+    print("  - Large compile speedup = Python overhead dominates without torch.compile.")
+    print("=" * 90)
 
 
 if __name__ == "__main__":
