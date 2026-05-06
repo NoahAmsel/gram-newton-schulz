@@ -31,14 +31,15 @@ def _make_compiled_gram(ops, ns_coefficients, gram_newton_schulz_reset_iteration
     gram_newton_schulz_reset_iterations = set(gram_newton_schulz_reset_iterations)
 
     def _gram_newton_schulz(X: Tensor) -> Tensor:
-        should_transpose = X.size(-2) > X.size(-1)
-        if should_transpose:
-            X = X.mT
+        tall_skinny = X.size(-2) > X.size(-1)
         X = X.to(torch.float32)
         X = X / (X.norm(dim=(-2, -1), keepdim=True) + ns_epsilon)
         X = X.to(torch.float16)
 
-        R = ops.sym_mm(X, X.mT)
+        if tall_skinny:
+            R = ops.sym_mm(X.mT, X)
+        else:
+            R = ops.sym_mm(X, X.mT)
 
         batch_size = R.size(0)
         I = torch.eye(R.size(-1), device=X.device, dtype=X.dtype).unsqueeze(0).expand(batch_size, -1, -1).contiguous()
@@ -46,8 +47,12 @@ def _make_compiled_gram(ops, ns_coefficients, gram_newton_schulz_reset_iteration
 
         for i, (a, b, c) in enumerate(ns_coefficients):
             if i in gram_newton_schulz_reset_iterations and i != 0:
-                X = ops.mm(Q, X)
-                R = ops.sym_mm(X, X.mT)
+                if tall_skinny:
+                    X = ops.mm(X, Q)
+                    R = ops.sym_mm(X.mT, X)
+                else:
+                    X = ops.mm(Q, X)
+                    R = ops.sym_mm(X, X.mT)
                 Q = None
 
             Z = ops.sym_baddbmm(R, R, C=R, alpha=c, beta=b)
@@ -59,9 +64,10 @@ def _make_compiled_gram(ops, ns_coefficients, gram_newton_schulz_reset_iteration
                 RZ = ops.sym_baddbmm(R, Z, C=R, beta=a)
                 R = ops.sym_baddbmm(Z, RZ, C=RZ, beta=a)
 
-        X = ops.mm(Q, X)
-        if should_transpose:
-            X = X.mT
+        if tall_skinny:
+            X = ops.mm(X, Q)
+        else:
+            X = ops.mm(Q, X)
         return X
 
     if compile_kwargs is not None:
@@ -74,19 +80,21 @@ def _make_compiled_standard(ops, ns_coefficients, ns_epsilon, compile_kwargs):
     ns_coefficients = list(ns_coefficients)
 
     def _standard_newton_schulz(X: Tensor) -> Tensor:
-        should_transpose = X.size(-2) > X.size(-1)
-        if should_transpose:
-            X = X.mT
+        tall_skinny = X.size(-2) > X.size(-1)
         X = X.to(torch.float32)
         X = X / (X.norm(dim=(-2, -1), keepdim=True) + ns_epsilon)
         X = X.to(torch.float16)
 
         for a, b, c in ns_coefficients:
-            A = ops.sym_mm(X, X.mT)
+            if tall_skinny:
+                A = ops.sym_mm(X.mT, X)
+            else:
+                A = ops.sym_mm(X, X.mT)
             B = ops.sym_baddbmm(A, A, C=A, alpha=c, beta=b)
-            X = ops.mm_add(B, X, C=X, beta=a)
-        if should_transpose:
-            X = X.mT
+            if tall_skinny:
+                X = ops.mm_add(X, B, C=X, beta=a)
+            else:
+                X = ops.mm_add(B, X, C=X, beta=a)
         return X
 
     if compile_kwargs is not None:
